@@ -41,6 +41,9 @@ import streamlit as st
 DB_PATH = "soc_tickets.db"
 UPLOAD_ROOT = "uploads"
 
+# Admin password for maintenance actions (set env SOC_WIPE_PASSWORD or use default)
+ADMIN_WIPE_PASSWORD = os.getenv("SOC_WIPE_PASSWORD", "changeme")
+
 # ----------------------------- Utilities -----------------------------
 
 def now_utc_iso():
@@ -318,12 +321,6 @@ elif page == "Ticket Queue":
                 file_name="soc_ticket_queue.csv",
                 mime="text/csv",
             )
-
-            st.markdown("### Open a ticket")
-            tid = st.number_input("Ticket ID", min_value=1, step=1)
-            if st.button("Open Ticket #", type="primary"):
-                st.session_state.selected_ticket_id = int(tid)
-                st.switch_page("/Ticket_Detail") if hasattr(st, 'switch_page') else None
         else:
             st.info("No tickets match the filters.")
     else:
@@ -508,24 +505,37 @@ elif page == "Settings":
 
     st.markdown("---")
     st.write("Maintenance")
-    if st.button("Rebuild DB (keeps data)"):
-        init_db()
-        st.success("Schema ensured.")
+    pw = st.text_input("Admin password for maintenance", type="password", help="Set env SOC_WIPE_PASSWORD to override default.")
 
-    if st.button("Wipe ALL Data ⚠️"):
-        with get_conn() as conn:
-            conn.execute("DELETE FROM evidence")
-            conn.execute("DELETE FROM comments")
-            conn.execute("DELETE FROM tickets")
-        # also clear uploads
-        try:
-            import shutil
-            if os.path.isdir(UPLOAD_ROOT):
-                shutil.rmtree(UPLOAD_ROOT)
-            os.makedirs(UPLOAD_ROOT, exist_ok=True)
-        except Exception:
-            pass
-        st.cache_data.clear()
-        st.success("All data wiped.")
+    colm1, colm2 = st.columns(2)
+    with colm1:
+        if st.button("Rebuild DB (keeps data)"):
+            if pw != ADMIN_WIPE_PASSWORD:
+                st.error("Invalid admin password.")
+            else:
+                init_db()
+                st.success("Schema ensured.")
+    with colm2:
+        confirm = st.checkbox("I understand this will permanently delete all tickets, comments, evidence, and uploads.")
+        if st.button("Wipe ALL Data ⚠️"):
+            if pw != ADMIN_WIPE_PASSWORD:
+                st.error("Invalid admin password.")
+            elif not confirm:
+                st.error("Please tick the confirmation checkbox to proceed.")
+            else:
+                with get_conn() as conn:
+                    conn.execute("DELETE FROM evidence")
+                    conn.execute("DELETE FROM comments")
+                    conn.execute("DELETE FROM tickets")
+                # also clear uploads
+                try:
+                    import shutil
+                    if os.path.isdir(UPLOAD_ROOT):
+                        shutil.rmtree(UPLOAD_ROOT)
+                    os.makedirs(UPLOAD_ROOT, exist_ok=True)
+                except Exception:
+                    pass
+                st.cache_data.clear()
+                st.success("All data wiped.")
 
 st.caption("© 2025 SOC Ticketing Starter · Streamlit")
