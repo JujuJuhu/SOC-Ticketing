@@ -11,7 +11,8 @@ Features
 - Ticket detail page with updates (status, assignee, severity), comments/timeline, evidence add
 - SLA due time auto-calculation by severity (customizable)
 - CSV export of current filtered queue
-- Simple role hint (Analyst/Lead/Manager) to tailor available actions (not strict auth)
+- Save full operational report (text) and export all tickets (CSV)
+- Per-ticket report export (text + JSON)
 - Lightweight persistence with SQLite (soc_tickets.db)
 
 How to run
@@ -29,6 +30,7 @@ Notes
 import os
 import re
 import io
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -341,6 +343,7 @@ elif page == "Ticket Detail":
         if 'selected_ticket_id' in st.session_state and st.session_state.selected_ticket_id in ids:
             default_idx = ids.index(st.session_state.selected_ticket_id)
         sel_id = st.selectbox("Select Ticket ID", ids, index=default_idx)
+        st.session_state.selected_ticket_id = sel_id
         rec = get_ticket(int(sel_id))
         if not rec:
             st.error("Ticket not found.")
@@ -450,6 +453,60 @@ elif page == "Ticket Detail":
             else:
                 st.info("No evidence uploaded.")
 
+            # ---------------- Per-ticket Export ----------------
+            st.markdown("---")
+            st.markdown("### 📎 Save Ticket Report")
+            # Build a ticket summary text
+            def build_ticket_text(ticket_rec: Dict[str, Any], comments_df: pd.DataFrame, evidence_df: pd.DataFrame) -> str:
+                lines = []
+                lines.append(f"SOC Ticket Report - Ticket #{ticket_rec['id']}")
+                lines.append(f"Generated: {datetime.utcnow().isoformat()}Z")
+                lines.append("")
+                lines.append("=== Ticket Summary ===")
+                for k in ['title','description','severity','status','category','reporter','assignee','asset','src_ip','dst_ip','tags','created_at','updated_at','due_at']:
+                    lines.append(f"{k}: {ticket_rec.get(k) or '-'}")
+                lines.append("")
+                lines.append("=== Comments ===")
+                if comments_df.empty:
+                    lines.append("No comments")
+                else:
+                    for _, r in comments_df.iterrows():
+                        lines.append(f"- [{r['created_at']}] {r['author']}: {r['comment']}")
+                lines.append("")
+                lines.append("=== Evidence ===")
+                if evidence_df.empty:
+                    lines.append("No evidence")
+                else:
+                    for _, r in evidence_df.iterrows():
+                        lines.append(f"- {r['file_name']} (uploaded_by: {r['uploaded_by']}, at: {r['uploaded_at']})")
+                return "\n".join(lines)
+
+            ticket_text = build_ticket_text(rec, cmt_df, ev_df)
+            ticket_bytes = ticket_text.encode('utf-8')
+            ticket_json = {
+                "ticket": rec,
+                "comments": cmt_df.to_dict(orient="records"),
+                "evidence": ev_df.to_dict(orient="records"),
+                "exported_at": now_utc_iso()
+            }
+            ticket_json_bytes = json.dumps(ticket_json, default=str, indent=2).encode('utf-8')
+
+            col_t1, col_t2 = st.columns(2)
+            with col_t1:
+                st.download_button(
+                    label="Download Ticket (Text)",
+                    data=ticket_bytes,
+                    file_name=f"ticket_{rec['id']}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt",
+                    mime="text/plain"
+                )
+            with col_t2:
+                st.download_button(
+                    label="Download Ticket (JSON)",
+                    data=ticket_json_bytes,
+                    file_name=f"ticket_{rec['id']}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+
 # --------------------------- Reports & SLA ---------------------------
 
 elif page == "Reports & SLA":
@@ -485,6 +542,51 @@ elif page == "Reports & SLA":
             'SLA Hours': list(DEFAULT_SLA_HOURS.values())
         })
         st.dataframe(sla_df, hide_index=True, use_container_width=True)
+
+        # ---------------- Full Operational Report Export ----------------
+        st.markdown("---")
+        st.markdown("### 📄 Export Full Report")
+
+        # Prepare summary text lines
+        report_lines = []
+        report_lines.append(f"SOC Incident Operational Report — generated at {datetime.utcnow().isoformat()}Z")
+        report_lines.append("")
+        report_lines.append("=== Key Metrics ===")
+        report_lines.append(f"Total Tickets: {len(df)}")
+        report_lines.append(f"Open (non-Closed): {(df['status'] != 'Closed').sum()}")
+        report_lines.append(f"Overdue: {overdue}")
+        report_lines.append("")
+        report_lines.append("=== Breakdown by Severity ===")
+        report_lines.append(df['severity'].value_counts().to_string())
+        report_lines.append("")
+        report_lines.append("=== Breakdown by Status ===")
+        report_lines.append(df['status'].value_counts().to_string())
+        report_lines.append("")
+        report_lines.append("=== SLA by Severity ===")
+        report_lines.append(sla_df.to_string(index=False))
+        report_lines.append("")
+        report_lines.append("=== Latest 20 Tickets ===")
+        latest20 = df.sort_values('created_at', ascending=False).head(20)
+        report_lines.append(latest20[['id','title','severity','status','assignee','created_at']].to_string(index=False))
+        report_text = "\n".join(report_lines)
+        report_bytes = report_text.encode("utf-8")
+
+        colr1, colr2 = st.columns(2)
+        with colr1:
+            st.download_button(
+                label="💾 Save as Text Report",
+                data=report_bytes,
+                file_name=f"soc_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+            )
+        with colr2:
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📊 Export All Tickets (CSV)",
+                data=csv_data,
+                file_name=f"soc_tickets_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+            )
 
 # ------------------------------ Settings ----------------------------
 
